@@ -24,6 +24,13 @@ def init_db():
     with app.app_context():
         db = get_db()
         cursor = db.cursor()
+        # 配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        ''')
         # 视频表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS videos (
@@ -31,8 +38,8 @@ def init_db():
                 vid TEXT UNIQUE NOT NULL,
                 url1 TEXT NOT NULL,
                 url2 TEXT NOT NULL,
-                url3 TEXT NOT NULL,
-                url4 TEXT NOT NULL
+                url3 TEXT,
+                url4 TEXT
             )
         ''')
         # 标注表
@@ -47,6 +54,8 @@ def init_db():
                 UNIQUE(video_id, user_name)
             )
         ''')
+        # 初始化默认配置
+        cursor.execute('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)', ('video_count', '4'))
         db.commit()
 
 # 首页
@@ -54,6 +63,29 @@ def init_db():
 def index():
     with open('index.html', 'r', encoding='utf-8') as f:
         return f.read()
+
+# 获取配置
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT value FROM config WHERE key = ?', ('video_count',))
+    row = cursor.fetchone()
+    video_count = int(row['value']) if row else 4
+    return jsonify({'video_count': video_count})
+
+# 设置配置
+@app.route('/api/config', methods=['POST'])
+def set_config():
+    video_count = request.json.get('video_count')
+    if video_count not in [2, 3, 4]:
+        return jsonify({'error': '视频数量必须是2、3或4'}), 400
+    
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', ('video_count', str(video_count)))
+    db.commit()
+    return jsonify({'success': True, 'video_count': video_count})
 
 # 获取下一个待标注视频
 @app.route('/api/next', methods=['POST'])
@@ -63,8 +95,14 @@ def get_next_video():
         return jsonify({'error': '请输入用户名'}), 400
     
     db = get_db()
-    # 找用户没标注过的视频
     cursor = db.cursor()
+    
+    # 获取视频数量配置
+    cursor.execute('SELECT value FROM config WHERE key = ?', ('video_count',))
+    row = cursor.fetchone()
+    video_count = int(row['value']) if row else 4
+    
+    # 找用户没标注过的视频
     cursor.execute('''
         SELECT v.id, v.vid, v.url1, v.url2, v.url3, v.url4
         FROM videos v
@@ -84,14 +122,18 @@ def get_next_video():
     cursor.execute('SELECT COUNT(*) FROM annotations WHERE user_name = ?', (user_name,))
     done = cursor.fetchone()[0]
     
+    # 根据配置返回相应数量的URL
+    urls = [video['url1'], video['url2'], video['url3'], video['url4']][:video_count]
+    
     return jsonify({
         'done': False,
+        'video_count': video_count,
         'video': {
             'id': video['id'],
             'vid': video['vid'],
-            'urls': [video['url1'], video['url2'], video['url3'], video['url4']]
+            'urls': urls
         },
-        'progress': {'done': done, 'total': total, 'percent': round(done/total*100) if total>0 else 0}
+        'progress': {'done': done, 'total': total, 'percent': round((done+1)/total*100) if total>0 else 0}
     })
 
 # 提交标注结果
